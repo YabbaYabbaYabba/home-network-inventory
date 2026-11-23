@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Network Inventory</title>
+<meta name="theme-color" content="#0b0f17">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Network">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div>
+      <h1>Network</h1>
+      <p class="sub" id="sub">Loading…</p>
+    </div>
+    <span class="pill" id="pill"><i></i><b id="pill-text">Loading</b></span>
+  </header>
+
+  <div id="banners"></div>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button data-view="map" class="on" role="tab">Map</button>
+    <button data-view="devices" role="tab">Devices</button>
+    <button data-view="review" role="tab">Review <span class="badge" id="review-badge" hidden></span></button>
+    <button data-view="activity" role="tab">Activity</button>
+    <button data-view="router" role="tab">Router</button>
+  </nav>
+
+  <!-- MAP -->
+  <section class="view" id="view-map">
+    <div class="live-strip" id="live-strip"></div>
+    <div class="card map-card">
+      <div class="map-tools">
+        <div class="chips" id="map-legend"></div>
+        <div class="row">
+          <label class="toggle"><input type="checkbox" id="show-offline"> Offline</label>
+          <label class="toggle"><input type="checkbox" id="show-labels" checked> Names</label>
+          <div class="seg small">
+            <button id="zoom-out" aria-label="Zoom out">−</button>
+            <button id="zoom-reset" aria-label="Fit">Fit</button>
+            <button id="zoom-in" aria-label="Zoom in">+</button>
+          </div>
+        </div>
+      </div>
+      <div class="map-wrap" id="map-wrap">
+        <svg id="map" xmlns="http://www.w3.org/2000/svg" aria-label="Network map"></svg>
+      </div>
+      <div class="hint" id="map-note"></div>
+    </div>
+  </section>
+
+  <!-- DEVICES -->
+  <section class="view" id="view-devices" hidden>
+    <div class="card">
+      <div class="row between">
+        <input type="search" id="search" placeholder="Search name, IP, MAC, vendor…" autocomplete="off">
+        <div class="seg small" id="dev-filter">
+          <button data-f="online" class="on">Online</button>
+          <button data-f="all">All</button>
+          <button data-f="new">Unreviewed</button>
+        </div>
+      </div>
+      <div class="hint" id="dev-count"></div>
+    </div>
+    <div id="device-groups"></div>
+    <div class="row exports">
+      <a class="link" href="/api/export.csv">Export CSV</a>
+      <a class="link" href="/api/export.json">Export JSON</a>
+    </div>
+  </section>
+
+  <!-- REVIEW -->
+  <section class="view" id="view-review" hidden>
+    <div class="card">
+      <div class="row between">
+        <div>
+          <h2>Devices to review</h2>
+          <div class="hint">Approve devices you recognise. Anything new on the network lands here first.</div>
+        </div>
+        <button class="btn" id="approve-all">Approve all</button>
+      </div>
+    </div>
+    <div class="card" id="review-list"></div>
+  </section>
+
+  <!-- ACTIVITY -->
+  <section class="view" id="view-activity" hidden>
+    <div class="card">
+      <div class="row between">
+        <h2>Activity</h2>
+        <div class="seg small" id="ev-filter">
+          <button data-f="important" class="on">Important</button>
+          <button data-f="all">All</button>
+        </div>
+      </div>
+      <div id="events"></div>
+    </div>
+  </section>
+
+  <!-- ROUTER -->
+  <section class="view" id="view-router" hidden>
+    <div class="card" id="router-card"></div>
+    <div class="card" id="scan-card"></div>
+    <div class="card" id="settings-card"></div>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+
+<!-- device sheet -->
+<div class="sheet-bg" id="sheet-bg" hidden></div>
+<aside class="sheet" id="sheet" hidden aria-modal="true" role="dialog">
+  <div class="sheet-head">
+    <div class="row">
+      <span class="ico big-ico" id="sh-icon"></span>
+      <div>
+        <h2 id="sh-name"></h2>
+        <div class="hint" id="sh-sub"></div>
+      </div>
+    </div>
+    <button class="x" id="sh-close" aria-label="Close">×</button>
+  </div>
+  <div class="sheet-body" id="sh-body"></div>
+</aside>
+</body>
+</html>

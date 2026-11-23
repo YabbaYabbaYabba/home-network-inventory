@@ -1,0 +1,22 @@
+services:
+  network-inventory:
+    build: .
+    container_name: home-network-inventory
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-UTC}
+    # Host networking puts the container on 192.168.50.x so it can see devices (ARP, Bonjour, UPnP).
+    # The web page is then on the NAS at port 8089 (change with PORT in .env).
+    network_mode: host
+    # Least privilege: no extra capabilities are needed (no raw sockets), so drop them all.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - inventory-data:/data
+    mem_limit: 256m
+
+volumes:
+  inventory-data:

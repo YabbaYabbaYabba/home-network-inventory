@@ -25,7 +25,7 @@ const svgIcon = (k, color) => `<svg viewBox="0 0 24 24" stroke="${esc(color || "
 const S = {
   state: null, version: null, live: null, view: "map", sel: null,
   devFilter: "online", evFilter: "important", hidden: new Set(),
-  showOffline: false, labels: true,
+  showOffline: false, labels: true, ips: true, traffic: true, hover: null,
 };
 const byMac = () => Object.fromEntries((S.state?.devices || []).map((d) => [d.mac, d]));
 const groupInfo = (id) => (S.state?.groups || []).find((g) => g.id === id) || { id, label: id, color: "#94a3b8", icon: "question" };
@@ -88,6 +88,7 @@ async function loadLive() {
   if (S.view !== "map" || document.hidden) return;
   try {
     S.live = await api("/api/live");
+    recordHistory(S.live.ifaces);
     applyLive();
   } catch (e) { /* keep last */ }
 }
@@ -173,9 +174,34 @@ const HUB_ORDER = ["wired", "2.4 GHz", "5 GHz", "5 GHz-2", "6 GHz", "6 GHz-2"];
 const VB = { x: -500, y: -500, w: 1000, h: 1000 };
 let mapKey = "";
 
+// What the map shows. Kept in this browser only.
+const MAP_PREFS = ["labels", "ips", "traffic", "showOffline"];
+try {
+  const p = JSON.parse(localStorage.getItem("mapPrefs") || "{}");
+  for (const k of MAP_PREFS) if (typeof p[k] === "boolean") S[k] = p[k];
+} catch (e) { /* private mode */ }
+function saveMapPrefs() {
+  try { localStorage.setItem("mapPrefs", JSON.stringify(Object.fromEntries(MAP_PREFS.map((k) => [k, S[k]])))); } catch (e) { /* ignore */ }
+}
+
+// Each kind of link has its own colour (see .b-* in style.css).
+const BANDS = [
+  { cls: "b-wired", label: "Wired", test: (k) => k === "wired" },
+  { cls: "b-24", label: "2.4 GHz", test: (k) => k.startsWith("2.4") },
+  { cls: "b-5", label: "5 GHz", test: (k) => k.startsWith("5") },
+  { cls: "b-6", label: "6 GHz", test: (k) => k.startsWith("6") },
+  { cls: "b-mesh", label: "AiMesh", test: (k) => k.startsWith("mesh:") },
+];
+const bandOf = (k) => BANDS.find((b) => b.test(k || "")) || { cls: "b-other", label: "Other" };
+const SPARK = { wan: "#38bdf8", wired: "#94a3b8", "2.4 GHz": "#fbbf24", "5 GHz": "#a78bfa", "5 GHz-2": "#a78bfa", "6 GHz": "#f472b6", "6 GHz-2": "#f472b6" };
+
 function hubOf(d, macs) {
   if (d.mesh_parent && macs[d.mesh_parent]) return `mesh:${d.mesh_parent}`;
   return d.conn || "unknown";
+}
+
+function labelLines() {
+  return (S.labels ? 1 : 0) + (S.ips ? 1 : 0) + (S.traffic ? 1 : 0);
 }
 
 function layout() {
@@ -201,13 +227,17 @@ function layout() {
   const weights = list.map((h) => Math.max(h.items.length, 3));
   const wsum = weights.reduce((a, b) => a + b, 0) || 1;
   let a0 = -Math.PI / 2 + gap / 2;
-  const RH = 175, R0 = 320, RING = 80, SP = 74;
-  let maxR = 360;
+  // more label lines need more room between devices and between rings
+  const lines = labelLines();
+  const RH = 175, R0 = 330, RING = 66 + 14 * lines, SP = 78 + (S.ips ? 22 : 0);
+  const box = { x0: -60, x1: 60, y0: -300, y1: 80 };
+  const grow = (x, y) => { box.x0 = Math.min(box.x0, x); box.x1 = Math.max(box.x1, x); box.y0 = Math.min(box.y0, y); box.y1 = Math.max(box.y1, y); };
   for (let i = 0; i < list.length; i++) {
     const h = list[i];
     const span = (total * weights[i]) / wsum;
     h.a0 = a0; h.a1 = a0 + span; h.mid = a0 + span / 2;
     h.x = RH * Math.cos(h.mid); h.y = RH * Math.sin(h.mid);
+    grow(h.x, h.y);
     // rings of devices beyond the hub
     let r = R0, idx = 0;
     const pad = Math.min(0.08, span * 0.08);
@@ -221,14 +251,17 @@ function layout() {
         const ang = start + j * step;
         const d = h.items[idx + j];
         d._x = r * Math.cos(ang); d._y = r * Math.sin(ang); d._hub = h;
+        grow(d._x, d._y);
       }
       idx += n;
-      maxR = Math.max(maxR, r + 50);
       r += RING;
     }
     a0 += span;
   }
-  return { hubs: list, maxR };
+  // room for the labels around the outermost nodes
+  const lh = 30 + 14 * lines;
+  box.x0 -= 70; box.x1 += 70; box.y0 -= lh; box.y1 += lh;
+  return { hubs: list, box };
 }
 
 const hubLabel = (h) => (h.dev ? h.dev.name : h.key === "wired" ? "Wired" : h.key === "unknown" ? "Not connected" : h.key);
@@ -238,26 +271,55 @@ function iconPath(k, x, y, s, cls, color) {
   return `<path class="ic ${cls || ""}" ${color ? `stroke="${esc(color)}"` : ""} d="${ICONS[k] || ICONS.question}" transform="translate(${(x - 12 * s).toFixed(1)} ${(y - 12 * s).toFixed(1)}) scale(${s})"/>`;
 }
 
+// A stack of text lines on a rounded background. sizeLabels() fits the background once the text is in the page.
+// lines: [{ text, cls, attrs }]; below = stack grows down from y, otherwise it ends at y.
+function label(x, y, below, lines) {
+  if (!lines.length) return "";
+  const first = below ? y : y - (lines.length - 1) * 14;
+  return `<g class="lbl"><rect class="lbl-bg" rx="7"/>${lines.map((l, i) =>
+    `<text class="${l.cls || ""}" x="${x.toFixed(1)}" y="${(first + i * 14).toFixed(1)}" ${l.attrs || ""}>${esc(l.text || "")}</text>`).join("")}</g>`;
+}
+function sizeLabels() {
+  for (const g of $$("#map .lbl")) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const t of g.querySelectorAll("text")) {
+      if (!t.textContent) continue;
+      const b = t.getBBox();
+      if (!b.width) continue;
+      x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+    }
+    const r = g.firstElementChild;
+    if (x0 === Infinity) { r.setAttribute("width", 0); continue; }
+    r.setAttribute("x", (x0 - 7).toFixed(1)); r.setAttribute("y", (y0 - 3).toFixed(1));
+    r.setAttribute("width", (x1 - x0 + 14).toFixed(1)); r.setAttribute("height", (y1 - y0 + 6).toFixed(1));
+  }
+}
+
 function renderMap() {
   const st = S.state;
   renderLegend();
+  renderToggles();
   const L = layout();
   S.layout = L;
   const routerDev = st.devices.find((d) => d.is_router);
   const parts = [];
   // guide rings
-  parts.push(`<circle class="ring" r="175"/><circle class="ring" r="320"/>`);
+  parts.push(`<circle class="ring" r="175"/><circle class="ring" r="330"/>`);
   // internet link
-  parts.push(`<line class="link" id="ln-wan" x1="0" y1="-60" x2="0" y2="-215" stroke-width="3"/>`);
+  parts.push(`<line class="link b-wan" id="ln-wan" x1="0" y1="-60" x2="0" y2="-215" stroke-width="3"/>`);
   parts.push(`<path class="flow down" id="fl-wan-d" d="M-4 -215 L-4 -60"/><path class="flow up" id="fl-wan-u" d="M4 -215 L4 -60"/>`);
   for (const h of L.hubs) {
-    const wifi = !h.dev && h.key !== "wired";
-    parts.push(`<line class="link ${wifi ? "" : ""}" x1="0" y1="0" x2="${h.x.toFixed(1)}" y2="${h.y.toFixed(1)}" stroke-width="2.5"/>`);
-    parts.push(`<path class="flow down" data-flow="hub:${esc(h.key)}:d" d="M0 0 L${h.x.toFixed(1)} ${h.y.toFixed(1)}"/>`);
-    parts.push(`<path class="flow up" data-flow="hub:${esc(h.key)}:u" d="M0 0 L${h.x.toFixed(1)} ${h.y.toFixed(1)}"/>`);
+    const band = bandOf(h.key), hk = esc(h.key);
+    const wifi = band.cls !== "b-wired" && band.cls !== "b-mesh";
+    parts.push(`<line class="link ${band.cls} ${wifi ? "wifi" : ""}" data-hub="${hk}" x1="0" y1="0" x2="${h.x.toFixed(1)}" y2="${h.y.toFixed(1)}" stroke-width="2.5"/>`);
+    parts.push(`<path class="flow down ${band.cls}" data-hub="${hk}" data-flow="hub:${hk}:d" d="M0 0 L${h.x.toFixed(1)} ${h.y.toFixed(1)}"/>`);
+    parts.push(`<path class="flow up ${band.cls}" data-hub="${hk}" data-flow="hub:${hk}:u" d="M0 0 L${h.x.toFixed(1)} ${h.y.toFixed(1)}"/>`);
     for (const d of h.items) {
-      parts.push(`<line class="link ${wifi || (h.dev && d.conn !== "wired") ? "wifi" : ""}" x1="${h.x.toFixed(1)}" y1="${h.y.toFixed(1)}" x2="${d._x.toFixed(1)}" y2="${d._y.toFixed(1)}" stroke-width="1.2"/>`);
-      parts.push(`<path class="flow down" data-flow="dev:${d.mac}:d" d="M${h.x.toFixed(1)} ${h.y.toFixed(1)} L${d._x.toFixed(1)} ${d._y.toFixed(1)}"/>`);
+      // under a mesh node, colour the last hop by how the device connects to that node
+      const db = h.dev ? bandOf(d.conn) : band;
+      const dwifi = db.cls !== "b-wired" && db.cls !== "b-other";
+      parts.push(`<line class="link thin ${db.cls} ${dwifi ? "wifi" : ""} ${d.online ? "" : "offline"}" data-hub="${hk}" data-dev="${d.mac}" x1="${h.x.toFixed(1)}" y1="${h.y.toFixed(1)}" x2="${d._x.toFixed(1)}" y2="${d._y.toFixed(1)}" stroke-width="1.3"/>`);
+      parts.push(`<path class="flow down ${db.cls}" data-hub="${hk}" data-dev="${d.mac}" data-flow="dev:${d.mac}:d" d="M${h.x.toFixed(1)} ${h.y.toFixed(1)} L${d._x.toFixed(1)} ${d._y.toFixed(1)}"/>`);
     }
   }
   // device nodes
@@ -266,46 +328,55 @@ function renderMap() {
       const g = groupInfo(d.group);
       const ang = Math.atan2(d._y, d._x);
       const below = Math.sin(ang) > -0.35;
-      const ty = below ? d._y + 34 : d._y - 40;
-      parts.push(`<g class="node ${d.online ? "" : "offline"} ${S.sel === d.mac ? "sel" : ""}" data-mac="${d.mac}">
-        <circle class="bg" cx="${d._x.toFixed(1)}" cy="${d._y.toFixed(1)}" r="19" fill="${g.color}26" stroke="${g.color}"/>
+      const lines = [];
+      if (S.labels) lines.push({ text: trunc(d.name, 18), cls: "name" });
+      if (S.ips && d.ip) lines.push({ text: d.ip, cls: "ip" });
+      if (!d.online) lines.push({ text: d.last_seen ? `offline · ${ago(d.last_seen)}` : "offline", cls: "sm" });
+      else if (S.traffic) lines.push({ text: "", cls: "sm", attrs: `data-rate="${d.mac}"` });
+      parts.push(`<g class="node ${d.online ? "" : "offline"} ${S.sel === d.mac ? "sel" : ""}" data-mac="${d.mac}" data-hub="${esc(h.key)}" data-dev="${d.mac}">
+        <circle class="bg" cx="${d._x.toFixed(1)}" cy="${d._y.toFixed(1)}" r="19" fill="${g.color}24" stroke="${g.color}"/>
         ${iconPath(iconFor(d), d._x, d._y, 0.85, "", g.color)}
-        ${d.approved ? "" : `<circle class="unrev" cx="${(d._x + 14).toFixed(1)}" cy="${(d._y - 14).toFixed(1)}" r="5.5"/>`}
-        <text class="dlabel" x="${d._x.toFixed(1)}" y="${ty.toFixed(1)}">${esc(trunc(d.name, 18))}</text>
-        <text class="sm dlabel" data-rate="${d.mac}" x="${d._x.toFixed(1)}" y="${(ty + 14).toFixed(1)}"></text>
+        ${d.approved ? "" : `<circle class="unrev" cx="${(d._x + 14).toFixed(1)}" cy="${(d._y - 14).toFixed(1)}" r="4.5"><title>Needs review</title></circle>`}
+        ${label(d._x, below ? d._y + 37 : d._y - 31, below, lines)}
       </g>`);
     }
   }
   // hubs
   for (const h of L.hubs) {
-    const tag = h.dev ? `class="node hub" data-mac="${h.dev.mac}"` : `class="hub"`;
-    const ly = h.y + (Math.sin(h.mid) > -0.3 ? 34 : -28);
-    parts.push(`<g ${tag}><circle class="bg" cx="${h.x.toFixed(1)}" cy="${h.y.toFixed(1)}" r="20"/>
+    const band = bandOf(h.key);
+    const tag = h.dev ? `class="node hub ${band.cls}" data-mac="${h.dev.mac}"` : `class="hub ${band.cls}"`;
+    const below = Math.sin(h.mid) > -0.3;
+    const lines = [{ text: `${trunc(hubLabel(h), 22)} · ${h.items.length}`, cls: "name" }];
+    if (S.ips && h.dev?.ip) lines.push({ text: h.dev.ip, cls: "ip" });
+    if (S.traffic) lines.push({ text: "", cls: "rate d", attrs: `data-hubrate="${esc(h.key)}:d"` });
+    parts.push(`<g ${tag} data-hub="${esc(h.key)}"><circle class="bg" cx="${h.x.toFixed(1)}" cy="${h.y.toFixed(1)}" r="20"/>
       ${iconPath(hubIcon(h), h.x, h.y, 0.85, "hub-ic")}
-      <text x="${h.x.toFixed(1)}" y="${ly.toFixed(1)}">${esc(trunc(hubLabel(h), 22))} <tspan class="sm">· ${h.items.length}</tspan></text>
-      <text class="rate d" data-hubrate="${esc(h.key)}:d" x="${h.x.toFixed(1)}" y="${(ly + 13).toFixed(1)}"></text>
+      ${label(h.x, below ? h.y + 38 : h.y - 30, below, lines)}
     </g>`);
   }
   // internet + router
-  parts.push(`<g class="hub"><circle class="bg" cx="0" cy="-245" r="26"/>${iconPath("globe", 0, -245, 1.05, "hub-ic")}
-    <text class="title" x="0" y="-282">Internet</text></g>`);
-  parts.push(`<text class="rate d" id="wan-d" x="-12" y="-130" text-anchor="end"></text><text class="rate u" id="wan-u" x="14" y="-130" text-anchor="start"></text>`);
+  parts.push(`<g class="hub b-wan"><circle class="bg" cx="0" cy="-245" r="26"/>${iconPath("globe", 0, -245, 1.05, "hub-ic")}
+    ${label(0, -283, false, [{ text: "Internet", cls: "title" }])}</g>`);
+  if (S.traffic) parts.push(`<text class="rate d" id="wan-d" x="-12" y="-130"></text><text class="rate u" id="wan-u" x="14" y="-130"></text>`);
+  const rlines = [];
+  if (S.labels) rlines.push({ text: routerDev ? routerDev.name : "Router", cls: "title" });
+  if (S.ips) rlines.push({ text: routerDev?.ip || st.router.url.replace(/^https?:\/\//, "").replace(/:\d+$/, ""), cls: "ip" });
   parts.push(`<g class="core ${routerDev ? "node" : ""}" ${routerDev ? `data-mac="${routerDev.mac}"` : ""}>
-    <circle class="halo" r="44"/><circle class="bg" r="38"/>${iconPath("router", 0, 0, 1.25, "core-ic")}
-    <text class="title" x="0" y="58">${esc(routerDev ? routerDev.name : "Router")}</text>
-    <text class="sm" x="0" y="71">${esc(st.router.url.replace(/^https?:\/\//, ""))}</text></g>`);
+    <circle class="halo" r="46"/><circle class="bg" r="38"/>${iconPath("router", 0, 0, 1.25, "core-ic")}
+    ${label(0, 62, true, rlines)}</g>`);
 
   const svg = $("#map");
   svg.innerHTML = parts.join("");
-  svg.classList.toggle("nolabels", !S.labels);
   // the WAN text labels need explicit anchors (CSS sets middle)
-  $("#wan-d").style.textAnchor = "end";
-  $("#wan-u").style.textAnchor = "start";
-  const key = L.hubs.map((h) => h.key + h.items.length).join("|");
-  if (S.fitNext || key !== mapKey) { fit(L.maxR); S.fitNext = false; }
+  if (S.traffic) { $("#wan-d").style.textAnchor = "end"; $("#wan-u").style.textAnchor = "start"; }
+  const key = L.hubs.map((h) => h.key + h.items.length).join("|") + labelLines();
+  if (S.fitNext || key !== mapKey) { fit(L.box); S.fitNext = false; }
   mapKey = key;
   setVB();
+  sizeLabels();
   applyLive();
+  renderMapKey(L);
+  highlight(S.sel && !$("#sheet").hidden ? S.sel : S.hover);
   const dt = S.live?.device_traffic;
   $("#map-note").textContent = dt === "unavailable"
     ? "Per-device traffic isn't available: turn on Traffic Analyzer (or Adaptive QoS) in the router to see each device's throughput. Interface totals are shown."
@@ -313,6 +384,56 @@ function renderMap() {
 }
 
 const trunc = (s, n) => ((s || "").length > n ? s.slice(0, n - 1) + "…" : s || "");
+
+// Fade everything except the path from the router to one device (or one hub).
+function highlight(target) {
+  const svg = $("#map");
+  if (!target) { svg.classList.remove("focus"); return; }
+  const isDev = !target.startsWith("hub:");
+  const hubKey = isDev ? $(`#map .node[data-dev="${CSS.escape(target)}"]`)?.dataset.hub : target.slice(4);
+  if (isDev && hubKey == null) { svg.classList.remove("focus"); return; }
+  svg.classList.add("focus");
+  for (const el of $$("#map [data-hub]")) {
+    const lit = isDev ? (el.dataset.dev ? el.dataset.dev === target : el.dataset.hub === hubKey) : el.dataset.hub === hubKey;
+    el.classList.toggle("lit", lit);
+  }
+}
+$("#map").addEventListener("pointerover", (e) => {
+  if (e.pointerType !== "mouse") return;
+  const n = e.target.closest(".node[data-dev], .hub[data-hub]");
+  const t = n ? (n.dataset.dev || `hub:${n.dataset.hub}`) : null;
+  if (t === S.hover) return;
+  S.hover = t;
+  if (!(S.sel && !$("#sheet").hidden)) highlight(t);
+});
+$("#map").addEventListener("pointerleave", () => { S.hover = null; if (!(S.sel && !$("#sheet").hidden)) highlight(null); });
+
+function renderToggles() {
+  for (const b of $$("#map-toggles .tg")) {
+    const on = !!S[b.dataset.k];
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on);
+  }
+}
+$("#map-toggles").addEventListener("click", (e) => {
+  const b = e.target.closest(".tg");
+  if (!b) return;
+  S[b.dataset.k] = !S[b.dataset.k];
+  saveMapPrefs();
+  renderMap();
+});
+
+function renderMapKey(L) {
+  const seen = new Set(L.hubs.map((h) => bandOf(h.key).cls));
+  for (const h of L.hubs) if (h.dev) for (const d of h.items) seen.add(bandOf(d.conn).cls);
+  const st = S.state;
+  const items = BANDS.filter((b) => seen.has(b.cls)).map((b) =>
+    `<span class="k"><svg viewBox="0 0 22 8"><line class="link ${b.cls} ${b.cls === "b-wired" || b.cls === "b-mesh" ? "" : "wifi"}" x1="1" y1="4" x2="21" y2="4" stroke-width="2"/></svg>${esc(b.label)}</span>`);
+  if (st.devices.some((d) => !d.approved)) items.push(`<span class="k"><i class="unrev-k"></i>Needs review</span>`);
+  if (S.showOffline && st.devices.some((d) => !d.online)) items.push(`<span class="k"><i class="off-k"></i>Offline</span>`);
+  items.push(`<span class="k hint-k">Point at a device to trace its path</span>`);
+  $("#map-key").innerHTML = items.join("");
+}
 
 function renderLegend() {
   const st = S.state;
@@ -328,16 +449,26 @@ $("#map-legend").addEventListener("click", (e) => {
   S.hidden.has(c.dataset.g) ? S.hidden.delete(c.dataset.g) : S.hidden.add(c.dataset.g);
   renderMap();
 });
-$("#show-offline").addEventListener("change", (e) => { S.showOffline = e.target.checked; renderMap(); });
-$("#show-labels").addEventListener("change", (e) => { S.labels = e.target.checked; $("#map").classList.toggle("nolabels", !S.labels); });
 
 function styleFlow(el, bps, maxW) {
   if (!el) return;
   const m = mbps(bps);
-  if (m < 0.02) { el.style.display = "none"; return; }
+  if (!S.traffic || m < 0.02) { el.style.display = "none"; return; }
   el.style.display = "";
   el.style.strokeWidth = (1 + Math.min(maxW, Math.log2(1 + m) * 1.25)).toFixed(2);
   el.style.animationDuration = Math.max(0.3, 2.4 - Math.log10(1 + m) * 0.85).toFixed(2) + "s";
+}
+
+// last ~2 minutes of each interface, for the small graphs in the live strip
+const HIST_LEN = 40;
+const HIST = {};
+function recordHistory(ifs) {
+  if (!ifs) return;
+  for (const [k, r] of Object.entries(ifs)) {
+    const h = (HIST[k] ||= []);
+    h.push(mbps(r.down));
+    if (h.length > HIST_LEN) h.shift();
+  }
 }
 
 function applyLive() {
@@ -368,17 +499,32 @@ function applyLive() {
     const t = $(`[data-rate="${mac}"]`);
     if (t) t.textContent = r && mbps(r.down + r.up) >= 0.05 ? `${fmtRate(r.down + r.up)} Mbps` : "";
   }
+  sizeLabels();
   renderLiveStrip();
+}
+
+function spark(k) {
+  const h = HIST[k] || [];
+  if (h.length < 2) return `<svg class="spark" viewBox="0 0 100 22" preserveAspectRatio="none"></svg>`;
+  const max = Math.max(...h, 0.1);
+  // newest reading on the right edge; the line grows leftwards until it has HIST_LEN readings
+  const xs = h.map((v, i) => 100 - ((h.length - 1 - i) / (HIST_LEN - 1)) * 100);
+  const pts = h.map((v, i) => `${xs[i].toFixed(1)},${(20 - (v / max) * 18).toFixed(1)}`);
+  const x0 = xs[0].toFixed(1), xe = "100";
+  const c = SPARK[k] || "#94a3b8";
+  return `<svg class="spark" viewBox="0 0 100 22" preserveAspectRatio="none">
+    <polygon points="${x0},22 ${pts.join(" ")} ${xe},22" fill="${c}" fill-opacity=".14"/>
+    <polyline points="${pts.join(" ")}" fill="none" stroke="${c}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
 }
 
 function renderLiveStrip() {
   const ifs = S.live?.ifaces || {};
   const cells = [];
-  const cell = (label, r, big) => `<div class="live"><div class="label">${esc(label)}</div>
+  const cell = (key, label, r) => `<div class="live"><div class="label">${esc(label)}</div>
     <div class="v"><span class="arrow-d">↓</span> ${fmtRate(r?.down)}<small>Mbps</small></div>
-    <div class="u"><span class="arrow-u">↑</span> ${fmtRate(r?.up)} Mbps</div></div>`;
-  cells.push(cell("Internet", ifs.wan, true));
-  for (const k of HUB_ORDER) if (ifs[k]) cells.push(cell(k === "wired" ? "Wired LAN" : `${k} Wi-Fi`, ifs[k]));
+    <div class="u"><span class="arrow-u">↑</span> ${fmtRate(r?.up)} Mbps</div>${spark(key)}</div>`;
+  cells.push(cell("wan", "Internet", ifs.wan));
+  for (const k of HUB_ORDER) if (ifs[k]) cells.push(cell(k, k === "wired" ? "Wired LAN" : `${k} Wi-Fi`, ifs[k]));
   if (!Object.keys(ifs).length) {
     $("#live-strip").innerHTML = `<div class="live"><div class="label">Live traffic</div><div class="u">${S.state?.router?.ok === false ? "Waiting for the router…" : "Measuring…"}</div></div>`;
     return;
@@ -387,13 +533,14 @@ function renderLiveStrip() {
 }
 
 // pan & zoom
-function fit(maxR) {
+function fit(box) {
   const wrap = $("#map-wrap").getBoundingClientRect();
   const aspect = wrap.width / Math.max(wrap.height, 1) || 1;
-  const r = maxR + 10;
-  let w = 2 * r, h = 2 * r + 40;
+  const b = box || { x0: -400, x1: 400, y0: -400, y1: 400 };
+  let w = b.x1 - b.x0, h = b.y1 - b.y0;
+  const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
   if (w / h < aspect) w = h * aspect; else h = w / aspect;
-  Object.assign(VB, { x: -w / 2, y: -h / 2 - 20, w, h });
+  Object.assign(VB, { x: cx - w / 2, y: cy - h / 2, w, h });
 }
 const setVB = () => $("#map").setAttribute("viewBox", `${VB.x.toFixed(1)} ${VB.y.toFixed(1)} ${VB.w.toFixed(1)} ${VB.h.toFixed(1)}`);
 function zoom(f, cx, cy) {
@@ -405,7 +552,7 @@ function zoom(f, cx, cy) {
 }
 $("#zoom-in").onclick = () => zoom(0.8);
 $("#zoom-out").onclick = () => zoom(1.25);
-$("#zoom-reset").onclick = () => { fit(S.layout?.maxR || 400); setVB(); };
+$("#zoom-reset").onclick = () => { fit(S.layout?.box); setVB(); };
 (() => {
   const wrap = $("#map-wrap");
   const pts = new Map();
@@ -448,7 +595,7 @@ $("#zoom-reset").onclick = () => { fit(S.layout?.maxR || 400); setVB(); };
     if (n) openSheet(n.dataset.mac);
   });
 })();
-window.addEventListener("resize", () => { if (S.view === "map" && S.layout) { fit(S.layout.maxR); setVB(); } });
+window.addEventListener("resize", () => { if (S.view === "map" && S.layout) { fit(S.layout.box); setVB(); } });
 
 // ------------------------------------------------------------------ DEVICES
 function devRow(d, extra = "") {
@@ -575,6 +722,7 @@ async function openSheet(mac) {
   refreshSheetHeader();
   $("#sh-body").innerHTML = `<div class="empty">Loading…</div>`;
   $$("#map .node").forEach((n) => n.classList.toggle("sel", n.dataset.mac === mac));
+  highlight(mac);
   try {
     const d = await api(`/api/device/${mac}`);
     renderSheet(d);
@@ -593,6 +741,7 @@ function closeSheet() {
   $("#sheet").hidden = $("#sheet-bg").hidden = true;
   S.sel = null;
   $$("#map .node.sel").forEach((n) => n.classList.remove("sel"));
+  highlight(S.hover);
 }
 $("#sh-close").onclick = closeSheet;
 $("#sheet-bg").onclick = closeSheet;

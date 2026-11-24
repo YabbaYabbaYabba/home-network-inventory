@@ -4,7 +4,7 @@ A small Docker app for the NAS that keeps an inventory of everything on the home
 
 - **Finds devices on its own.** Anything that joins the network shows up within a couple of minutes, from two sources: the router's own client list and a scan from the NAS.
 - **Sorts them into groups**: network gear, NAS & servers, computers, phones & tablets, TV & media, smart home & IoT, cameras, printers. Each device shows *why* it was put in its group, and any group you set by hand always wins.
-- **Live network map.** The router is in the centre, the Internet, wired LAN, each Wi-Fi band and any AiMesh nodes branch off it, and every device hangs off the link it uses. Live throughput animates on the links.
+- **Live network map.** The router is in the centre, the Internet, wired LAN, each Wi-Fi band and any AiMesh nodes branch off it, and every device hangs off the link it uses. Live throughput animates on the links, each kind of link (wired, 2.4, 5 and 6 GHz, AiMesh) has its own colour, and pointing at a device traces its path to the router. Toggles show or hide names, IP addresses, traffic and offline devices, and small graphs show the last two minutes of traffic.
 - **Security features.** A review queue for devices you haven't approved, alerts for new devices, IP address history, a flag for private (random) MAC addresses, and a hint when a phone has probably come back with a new random MAC. The inventory exports to CSV and JSON.
 
 | Map | Device details | iPhone |

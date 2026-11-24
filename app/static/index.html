@@ -41,9 +41,13 @@
     <div class="card map-card">
       <div class="map-tools">
         <div class="chips" id="map-legend"></div>
-        <div class="row">
-          <label class="toggle"><input type="checkbox" id="show-offline"> Offline</label>
-          <label class="toggle"><input type="checkbox" id="show-labels" checked> Names</label>
+        <div class="row map-ctl">
+          <div class="tgs" id="map-toggles" role="group" aria-label="Show on map">
+            <button class="tg" data-k="labels" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8zM7.5 7.5h.01"/></svg>Names</button>
+            <button class="tg" data-k="ips" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M5 4h14v6H5zM12 10v4M4 20h4v-6H4zM16 20h4v-6h-4zM8 17h8"/></svg>IP addresses</button>
+            <button class="tg" data-k="traffic" aria-pressed="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Traffic</button>
+            <button class="tg" data-k="showOffline" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM5 5l14 14"/></svg>Offline</button>
+          </div>
           <div class="seg small">
             <button id="zoom-out" aria-label="Zoom out">−</button>
             <button id="zoom-reset" aria-label="Fit">Fit</button>
@@ -54,6 +58,7 @@
       <div class="map-wrap" id="map-wrap">
         <svg id="map" xmlns="http://www.w3.org/2000/svg" aria-label="Network map"></svg>
       </div>
+      <div class="map-key" id="map-key"></div>
       <div class="hint" id="map-note"></div>
     </div>
   </section>
